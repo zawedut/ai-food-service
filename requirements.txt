@@ -1,8 +1,6 @@
 fastapi
-uvicorn[standard]
+pydantic
+scikit-learn
+numpy
 requests
 python-dotenv
-pydantic
-pytest
-scikit-learn 
-numpy        
