@@ -33,7 +33,7 @@ class TyphoonEngine:
         }
         
         payload = {
-            "model": "typhoon-v2.1-12b-instruct",
+            "model": "typhoon-v2.5-30b-a3b-instruct",
             "messages": [
                 {
                     "role": "system", 
