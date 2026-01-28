@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict
 import os
@@ -16,6 +17,15 @@ from api.engines.typhoon import TyphoonEngine
 
 load_dotenv()
 app = FastAPI(docs_url="/api/py/docs", openapi_url="/api/py/openapi.json")
+
+# CORS Middleware - Allow all origins for API access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ================= CONFIGURATION =================
 MAIN_API_URL = os.getenv("MAIN_API_URL")
