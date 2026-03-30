@@ -1,24 +1,20 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Optional
 import os
 import requests
 import asyncio
-from dotenv import load_dotenv
 from collections import Counter
 
-# Import Mock Data
+# ─── Relative imports for Vercel ───
 from api.mock_db import MOCK_FOOD_DB
-
-# Import Engines
 from api.engines.knn import KNNEngine
 from api.engines.typhoon import TyphoonEngine
 
-load_dotenv()
-app = FastAPI(docs_url="/api/py/docs", openapi_url="/api/py/openapi.json")
+# ================= APP =================
+app = FastAPI(title="AI Food Recommendation Service")
 
-# CORS Middleware - Allow all origins for API access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,227 +23,166 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================= CONFIGURATION =================
+# ================= CONFIG =================
 MAIN_API_URL = os.getenv("MAIN_API_URL")
 TYPHOON_API_KEY = os.getenv("TYPHOON_API_KEY")
 
-# Adaptive threshold - ปรับตามพฤติกรรม User
-KNN_THRESHOLD = 8  # ลดลงเล็กน้อย เพื่อให้ KNN เข้ามาช่วยเร็วขึ้น
-HYBRID_MODE_THRESHOLD = 15  # เมื่อมีประวัติมากพอ ใช้ Hybrid Mode
+KNN_THRESHOLD = 5
+HYBRID_MODE_THRESHOLD = 12
 
 # ================= STATE =================
 knn_bot = KNNEngine()
-typhoon_bot = None
-
-if TYPHOON_API_KEY:
-    typhoon_bot = TyphoonEngine(api_key=TYPHOON_API_KEY)
+typhoon_bot = TyphoonEngine(api_key=TYPHOON_API_KEY) if TYPHOON_API_KEY else None
 
 is_trained = False
-FOOD_CACHE = []
-USER_PATTERNS = {}  # เก็บ pattern การกินของ user แต่ละคน
+FOOD_CACHE: list = []
 
-# ================= HELPER FUNCTIONS =================
+
+# ================= MODELS =================
+class Filter(BaseModel):
+    tags: List[str] = []
+    priceMin: Optional[float] = 0
+    priceMax: Optional[float] = 999999
+
+
+class HistoryItem(BaseModel):
+    itemId: str
+    status: str  # "LIKE" | "DISLIKE" | "EAT"
+
+
+class RecommendRequest(BaseModel):
+    filter: Filter = Filter()
+    history: List[HistoryItem] = []
+
+
+# ================= HELPERS =================
 def fetch_and_train():
+    """Fetch items from Next Server, fallback to mock data."""
     global FOOD_CACHE, is_trained, knn_bot
-    print("🌍 Serverless Waking up: Fetching Data...")
-    
+
     try:
         if not MAIN_API_URL:
-            raise Exception("MAIN_API_URL not set in .env")
+            raise Exception("MAIN_API_URL not set")
 
-        url = f"{MAIN_API_URL}/items?partial=true&limit=1000"
-        print(f"   Trying Real API: {url}")
-        
-        res = requests.get(url, timeout=3)  # เพิ่ม timeout เล็กน้อย
-        
+        url = f"{MAIN_API_URL}/api/items/data?limit=1000"
+        res = requests.get(url, timeout=5)
+
         if res.status_code == 200:
-            data = res.json()
+            body = res.json()
+            raw_data = body.get("data", [])
             cleaned = []
-            for item in data:
-                tags = [t['name'] for t in item['food'].get('tags', [])]
+            for item in raw_data:
                 cleaned.append({
-                    "id": str(item['id']), 
-                    "name": item['food']['name'], 
-                    "tags": tags,
-                    "category": item['food'].get('category', 'unknown'),  # เพิ่ม category
-                    "popularity": item.get('likeCount', 0)  # เพิ่ม popularity
+                    "id": str(item["id"]),
+                    "name": item["name"],
+                    "tags": item.get("tags", []),
+                    "price": item.get("price", 0),
                 })
-            
             FOOD_CACHE = cleaned
-            print(f"✅ Loaded REAL DATA: {len(FOOD_CACHE)} items")
+            print(f"✅ Loaded {len(FOOD_CACHE)} items from API")
         else:
-            raise Exception(f"API returned status {res.status_code}")
+            raise Exception(f"API returned {res.status_code}")
 
     except Exception as e:
-        print(f"⚠️ Real API Failed ({e}) -> Switching to Mock Data")
+        print(f"⚠️ Using mock data ({e})")
         FOOD_CACHE = MOCK_FOOD_DB
-        print(f"✅ Loaded MOCK DATA: {len(FOOD_CACHE)} items")
 
     if FOOD_CACHE:
         knn_bot.train(FOOD_CACHE)
         is_trained = True
-    else:
-        print("❌ Error: No data available")
 
-def analyze_user_preferences(records: List) -> Dict:
-    """วิเคราะห์รูปแบบการกินของ User"""
-    eat_now = [r for r in records if r.status in ["eat_now", "super_like"]]
-    liked = [r for r in records if r.status == "like"]
-    
-    all_preferences = eat_now + liked
-    
-    # หา Tags ที่ User ชอบบ่อยๆ
+
+def analyze_user_preferences(history: List[HistoryItem]) -> dict:
+    """Analyze user taste from history."""
     tag_frequency = Counter()
-    for record in all_preferences:
-        food = next((f for f in FOOD_CACHE if f['id'] == record.itemId), None)
+    for record in history:
+        food = next((f for f in FOOD_CACHE if f["id"] == record.itemId), None)
         if food:
-            for tag in food.get('tags', []):
-                tag_frequency[tag] += 2 if record.status in ["eat_now", "super_like"] else 1
-    
+            weight = 3 if record.status == "EAT" else (1 if record.status == "LIKE" else -5)
+            for tag in food.get("tags", []):
+                tag_frequency[tag] += weight
+
     return {
-        "favorite_tags": [tag for tag, _ in tag_frequency.most_common(5)],
-        "engagement_level": len(all_preferences),
-        "super_like_ratio": len(eat_now) / max(len(all_preferences), 1)
+        "favorite_tags": [tag for tag, score in tag_frequency.most_common(5) if score > 0],
+        "engagement_level": len(history),
     }
 
-def get_diversity_bonus(candidates: List, selected_ids: List) -> List:
-    """เพิ่มความหลากหลายในผลลัพธ์"""
-    if len(selected_ids) >= 10:
-        return selected_ids[:10]
-    
-    # หา tags ที่มีอยู่แล้วใน selected
-    selected_foods = [f for f in FOOD_CACHE if str(f['id']) in selected_ids]
-    existing_tags = set()
-    for food in selected_foods:
-        existing_tags.update(food.get('tags', []))
-    
-    # หาอาหารที่มี tags แตกต่างออกไป
-    diverse_candidates = []
-    for c in candidates:
-        if str(c['id']) not in selected_ids:
-            food_tags = set(c.get('tags', []))
-            # ถ้ามี tags ที่ไม่ซ้ำกับที่มีอยู่ ให้คะแนนโบนัส
-            unique_tags = food_tags - existing_tags
-            if len(unique_tags) > 0:
-                diverse_candidates.append(c['id'])
-                if len(selected_ids) + len(diverse_candidates) >= 10:
-                    break
-    
-    return selected_ids + diverse_candidates[:10 - len(selected_ids)]
 
-# ================= INPUT MODELS =================
-class RecordItem(BaseModel):
-    itemId: str
-    status: str
-
-class RecommendReq(BaseModel):
-    dislikeId: List[str] = []
-    records: List[RecordItem] = []
-
-# ================= ENDPOINT =================
-@app.post("/api/py/recommend")
-async def recommend(req: RecommendReq):
+# ================= ENDPOINTS =================
+@app.post("/api/recommend")
+async def recommend(req: RecommendRequest):
+    """
+    AI recommends menu items.
+    Returns: { itemIds: string[] }
+    """
     if not is_trained:
         fetch_and_train()
 
-    # 1. แยกประวัติ
-    eat_now_ids = [r.itemId for r in req.records if r.status in ["eat_now", "super_like"]]
-    liked_ids = [r.itemId for r in req.records if r.status == "like"]
-    disliked_ids = [r.itemId for r in req.records if r.status == "dislike"] + req.dislikeId
+    # 1. Filter by price & tags
+    candidates = []
+    for f in FOOD_CACHE:
+        price = f.get("price", 0)
+        if price < (req.filter.priceMin or 0) or price > (req.filter.priceMax or 999999):
+            continue
+        if req.filter.tags:
+            if not any(t in f.get("tags", []) for t in req.filter.tags):
+                continue
+        candidates.append(f)
 
-    # 2. วิเคราะห์ User
-    user_prefs = analyze_user_preferences(req.records)
-    print(f"👤 User Analysis: {user_prefs}")
+    # 2. Parse history
+    eat_ids = [h.itemId for h in req.history if h.status == "EAT"]
+    like_ids = [h.itemId for h in req.history if h.status == "LIKE"]
+    dislike_ids = [h.itemId for h in req.history if h.status == "DISLIKE"]
 
-    # 3. เตรียม Candidates
-    seen_ids = set(eat_now_ids + liked_ids + disliked_ids)
-    candidates = [f for f in FOOD_CACHE if f['id'] not in seen_ids]
+    # Remove already-seen items
+    seen_ids = set(eat_ids + like_ids + dislike_ids)
+    candidates = [c for c in candidates if c["id"] not in seen_ids]
 
     if not candidates:
-        return {"foodIds": []}
+        return {"itemIds": []}
 
-    # Helper functions
-    def get_objs(ids): 
-        return [f for f in FOOD_CACHE if f['id'] in ids]
+    # Convert IDs to objects for engine
+    def get_objs(ids):
+        return [f for f in FOOD_CACHE if f["id"] in ids]
 
-    eat_now_objs = get_objs(eat_now_ids)
-    liked_objs = get_objs(liked_ids)
-    disliked_objs = get_objs(disliked_ids)
+    eat_objs = get_objs(eat_ids)
+    like_objs = get_objs(like_ids)
+    dislike_objs = get_objs(dislike_ids)
 
-    # 4. Smart Strategy Selection
-    good_history_count = len(eat_now_ids) + len(liked_ids)
+    user_prefs = analyze_user_preferences(req.history)
+    history_count = len(eat_ids) + len(like_ids)
     result_ids = []
-    
-    # STRATEGY 1: Cold Start with Typhoon (AI เดา)
-    if good_history_count < KNN_THRESHOLD and typhoon_bot:
-        print(f"🌪️ Cold Start ({good_history_count}/{KNN_THRESHOLD}): Typhoon Mode")
+
+    # 3. Strategy selection
+    if history_count < KNN_THRESHOLD and typhoon_bot:
+        print("🌪️ Strategy: Typhoon AI (cold start)")
         try:
-            # ให้ Typhoon เลือกจาก candidates ที่มี popularity สูง
-            popular_candidates = sorted(
-                candidates, 
-                key=lambda x: x.get('popularity', 0), 
-                reverse=True
-            )[:30]
-            
             result_ids = await typhoon_bot.predict(
-                popular_candidates,
-                [f['name'] for f in eat_now_objs], 
-                [f['name'] for f in liked_objs], 
-                [f['name'] for f in disliked_objs],
-                user_prefs['favorite_tags']  # ส่ง favorite tags ไปด้วย
+                candidates[:20],
+                [f["name"] for f in eat_objs],
+                [f["name"] for f in like_objs],
+                [f["name"] for f in dislike_objs],
+                user_prefs["favorite_tags"],
             )
-        except Exception as e:
-            print(f"⚠️ Typhoon Failed: {e}")
-            result_ids = knn_bot.predict(candidates, eat_now_objs, liked_objs, disliked_objs)
+        except Exception:
+            result_ids = knn_bot.predict(candidates, eat_objs, like_objs, dislike_objs)
 
-    # STRATEGY 2: Hybrid Mode (ผสม AI + Math)
-    elif good_history_count < HYBRID_MODE_THRESHOLD and typhoon_bot:
-        print(f"🔮 Hybrid Mode ({good_history_count}/{HYBRID_MODE_THRESHOLD})")
-        
-        # ใช้ KNN หาผล 70%
-        knn_results = knn_bot.predict(candidates, eat_now_objs, liked_objs, disliked_objs)
-        knn_top = knn_results[:7]
-        
-        # ใช้ Typhoon หาผล 30% จาก candidates ที่เหลือ
-        remaining_candidates = [c for c in candidates if c['id'] not in knn_top]
-        try:
-            typhoon_results = await typhoon_bot.predict(
-                remaining_candidates[:20],
-                [f['name'] for f in eat_now_objs],
-                [f['name'] for f in liked_objs],
-                [f['name'] for f in disliked_objs],
-                user_prefs['favorite_tags']
-            )
-            result_ids = knn_top + typhoon_results[:3]
-        except:
-            result_ids = knn_top
+    elif history_count < HYBRID_MODE_THRESHOLD and typhoon_bot:
+        print("🔮 Strategy: Hybrid")
+        result_ids = knn_bot.predict(candidates, eat_objs, like_objs, dislike_objs)[:7]
 
-    # STRATEGY 3: Pure KNN (Math เต็มที่)
     else:
-        print(f"🧮 Expert Mode ({good_history_count} records): KNN Only")
-        result_ids = knn_bot.predict(
-            candidates, 
-            eat_now_objs, 
-            liked_objs, 
-            disliked_objs,
-            boost_recent=True  # ให้ KNN ให้ความสำคัญกับรายการล่าสุดมากขึ้น
-        )
+        print("🧮 Strategy: KNN Expert")
+        result_ids = knn_bot.predict(candidates, eat_objs, like_objs, dislike_objs)
 
-    # 5. เพิ่ม Diversity
-    final_ids = get_diversity_bonus(candidates, result_ids)
-    
-    print(f"📤 Returning {len(final_ids)} recommendations")
-    return {"foodIds": final_ids[:10]}
+    return {"itemIds": result_ids[:10]}
 
 
-@app.get("/api/py/health")
-async def health_check():
+@app.get("/api/health")
+async def health():
     return {
-        "status": "healthy",
-        "trained": is_trained,
-        "food_count": len(FOOD_CACHE),
-        "engines": {
-            "knn": True,
-            "typhoon": typhoon_bot is not None
-        }
+        "status": "ok",
+        "items_loaded": len(FOOD_CACHE),
+        "is_trained": is_trained,
+        "typhoon_enabled": typhoon_bot is not None,
     }

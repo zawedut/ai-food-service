@@ -7,7 +7,7 @@
     ],
     "rewrites": [
         {
-            "source": "/api/py/(.*)",
+            "source": "/api/(.*)",
             "destination": "/api/index.py"
         }
     ],
@@ -25,7 +25,7 @@
                 },
                 {
                     "key": "Access-Control-Allow-Methods",
-                    "value": "GET,OPTIONS,PATCH,DELETE,POST,PUT"
+                    "value": "GET,OPTIONS,POST,PUT,DELETE"
                 },
                 {
                     "key": "Access-Control-Allow-Headers",

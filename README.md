@@ -1,79 +1,115 @@
-# AI Food Service 🍜🤖
+# AI Food Recommendation Service
 
-> AI-powered Food Recommendation API สำหรับ KU Food Swipe
-
-## Features
-- **KNN Engine** - Machine Learning สำหรับ recommendation ตาม tags
-- **Typhoon Engine** - AI-powered (OpenTyphoon) สำหรับ cold start users
-- **Hybrid Mode** - ผสม KNN + Typhoon เพื่อผลลัพธ์ที่ดีที่สุด
+AI-powered food recommendation API built with FastAPI + scikit-learn (KNN) + Typhoon LLM.  
+Deploys to **Vercel** as a serverless Python function.
 
 ## API Endpoints
 
-### POST `/api/py/recommend`
-แนะนำอาหารตามประวัติการ swipe ของ user
+### `POST /api/recommend` — AI เเนะนำเมนู
 
 **Request Body:**
 ```json
 {
-  "dislikeId": ["1", "2"],
-  "records": [
-    { "itemId": "3", "status": "eat_now" },
-    { "itemId": "4", "status": "like" },
-    { "itemId": "5", "status": "dislike" }
+  "filter": {
+    "tags": ["thai", "spicy"],
+    "priceMin": 0,
+    "priceMax": 200
+  },
+  "history": [
+    { "itemId": "1", "status": "EAT" },
+    { "itemId": "2", "status": "LIKE" },
+    { "itemId": "5", "status": "DISLIKE" }
   ]
 }
 ```
 
-**Status Values:**
-- `eat_now` / `super_like` - User ชอบมากอยากกินทันที
-- `like` - User ชอบ
-- `dislike` - User ไม่ชอบ
-
-**Response:**
+**Response Body:**
 ```json
 {
-  "foodIds": ["10", "15", "22", "8", "31"]
+  "itemIds": ["3", "11", "13", "14"]
 }
 ```
 
-### GET `/api/py/health`
-ตรวจสอบสถานะของ service
+- `filter.tags` — กรองตาม tags (ส่ง `[]` = ไม่กรอง)
+- `filter.priceMin / priceMax` — กรองตามราคา (optional)
+- `history[].status` — `"LIKE"` | `"DISLIKE"` | `"EAT"`
+- Response คืน item IDs ให้ Next Server ไป query ต่อ (สูงสุด 10 รายการ)
 
-**Response:**
+### `GET /api/health` — Health Check
+
 ```json
-{
-  "status": "healthy",
-  "trained": true,
-  "food_count": 50,
-  "engines": { "knn": true, "typhoon": true }
-}
+{ "status": "ok", "items_loaded": 20, "is_trained": true, "typhoon_enabled": false }
 ```
 
-## Environment Variables
-สร้างไฟล์ `.env` และเพิ่ม:
+## Data Fetch
 
-```env
-MAIN_API_URL=https://your-main-api.vercel.app/api
-TYPHOON_API_KEY=your-typhoon-api-key-here
+AI Server จะดึงข้อมูลจาก Next Server ผ่าน:
+```
+GET {MAIN_API_URL}/api/items/data?limit=1000
+```
+
+ถ้า `MAIN_API_URL` ไม่ได้ตั้งค่า จะใช้ mock data 20 รายการแทน.
+
+## Local Development
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+pip install uvicorn
+
+# 2. (Optional) set env vars
+export MAIN_API_URL=https://your-next-app.vercel.app
+export TYPHOON_API_KEY=your-key
+
+# 3. Run server
+uvicorn api.index:app --reload --port 8000
+
+# 4. Run tests
+python test_api.py
 ```
 
 ## Deploy to Vercel
 
-1. Push code ไปยัง GitHub
-2. ไปที่ [vercel.com](https://vercel.com) → Import Project
-3. เลือก repo `ai-food-service`
-4. ตั้ง Environment Variables:
-   - `MAIN_API_URL` - URL ของ API หลัก
-   - `TYPHOON_API_KEY` - API Key จาก OpenTyphoon
-5. Deploy!
-
-## Local Development
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# 1. Install Vercel CLI
+npm i -g vercel
 
-# Run server
-uvicorn api.index:app --reload --port 8000
+# 2. Deploy
+vercel
+
+# 3. Set environment variables on Vercel Dashboard:
+#    MAIN_API_URL = https://your-next-server.vercel.app
+#    TYPHOON_API_KEY = (optional, for LLM-powered cold-start recommendations)
+
+# 4. Test deployed version
+API_URL=https://your-app.vercel.app python test_api.py
 ```
 
-เข้าถึง API Docs: http://localhost:8000/api/py/docs
+## Architecture
+
+```
+Request → POST /api/recommend
+            │
+            ├─ history < 5 items  → 🌪️ Typhoon LLM (cold start)
+            ├─ history < 12 items → 🔮 Hybrid (KNN)
+            └─ history ≥ 12 items → 🧮 KNN Expert
+            │
+            ▼
+        { itemIds: [...] }
+```
+
+## Project Structure
+
+```
+ai-food-service/
+├── api/
+│   ├── index.py          # FastAPI main app
+│   ├── mock_db.py        # Mock data (fallback)
+│   └── engines/
+│       ├── knn.py        # KNN recommendation engine
+│       └── typhoon.py    # Typhoon LLM engine
+├── test_api.py           # Integration test suite
+├── requirements.txt      # Python dependencies
+├── vercel.json           # Vercel deployment config
+└── README.md
+```
