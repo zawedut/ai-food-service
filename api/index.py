@@ -13,7 +13,11 @@ from api.engines.knn import KNNEngine
 from api.engines.typhoon import TyphoonEngine
 
 # ================= APP =================
-app = FastAPI(title="AI Food Recommendation Service")
+app = FastAPI(
+    title="AI Food Recommendation Service",
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json"
+)
 
 app.add_middleware(
     CORSMiddleware,
