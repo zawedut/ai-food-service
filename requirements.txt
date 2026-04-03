@@ -2,4 +2,4 @@ fastapi
 pydantic
 scikit-learn
 numpy
-requests
+psycopg2-binary

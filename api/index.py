@@ -5,10 +5,11 @@ from typing import List, Optional
 import os
 import requests
 import asyncio
+import psycopg2
+import psycopg2.extras
 from collections import Counter
 
 # ─── Relative imports for Vercel ───
-from api.mock_db import MOCK_FOOD_DB
 from api.engines.knn import KNNEngine
 from api.engines.typhoon import TyphoonEngine
 
@@ -28,7 +29,7 @@ app.add_middleware(
 )
 
 # ================= CONFIG =================
-MAIN_API_URL = os.getenv("MAIN_API_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")
 TYPHOON_API_KEY = os.getenv("TYPHOON_API_KEY")
 
 KNN_THRESHOLD = 5
@@ -61,35 +62,51 @@ class RecommendRequest(BaseModel):
 
 # ================= HELPERS =================
 def fetch_and_train():
-    """Fetch items from Next Server, fallback to mock data."""
+    """Fetch items from Postgres DB directly."""
     global FOOD_CACHE, is_trained, knn_bot
 
     try:
-        if not MAIN_API_URL:
-            raise Exception("MAIN_API_URL not set")
+        if not DATABASE_URL:
+            raise Exception("DATABASE_URL not set")
 
-        url = f"{MAIN_API_URL}/api/items/data?limit=1000"
-        res = requests.get(url, timeout=5)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        if res.status_code == 200:
-            body = res.json()
-            raw_data = body.get("data", [])
-            cleaned = []
-            for item in raw_data:
-                cleaned.append({
-                    "id": str(item["id"]),
-                    "name": item["name"],
-                    "tags": item.get("tags", []),
-                    "price": item.get("price", 0),
-                })
-            FOOD_CACHE = cleaned
-            print(f"✅ Loaded {len(FOOD_CACHE)} items from API")
-        else:
-            raise Exception(f"API returned {res.status_code}")
+        query = """
+            SELECT 
+                i.id as id,
+                f.name as name,
+                i."priceMin" as price,
+                ARRAY(
+                    SELECT t.name 
+                    FROM "_foodsToTags" ft
+                    JOIN "Tag" t ON ft."B" = t.id
+                    WHERE ft."A" = f.id
+                ) as tags
+            FROM "Item" i
+            JOIN "Food" f ON i.food_id = f.id;
+        """
+        cur.execute(query)
+        rows = cur.fetchall()
+
+        cleaned = []
+        for item in rows:
+            cleaned.append({
+                "id": str(item["id"]),
+                "name": item["name"],
+                "tags": item.get("tags", []),
+                "price": float(item.get("price") or 0),
+            })
+            
+        FOOD_CACHE = cleaned
+        print(f"✅ Loaded {len(FOOD_CACHE)} items from DB")
+
+        cur.close()
+        conn.close()
 
     except Exception as e:
-        print(f"⚠️ Using mock data ({e})")
-        FOOD_CACHE = MOCK_FOOD_DB
+        print(f"❌ Failed to fetch data from DB: {e}")
+        pass
 
     if FOOD_CACHE:
         knn_bot.train(FOOD_CACHE)
