@@ -5,11 +5,10 @@ from typing import List, Optional
 import os
 import requests
 import asyncio
-import psycopg2
-import psycopg2.extras
 from collections import Counter
 
 # ─── Relative imports for Vercel ───
+from api.mock_db import MOCK_FOOD_DB
 from api.engines.knn import KNNEngine
 from api.engines.typhoon import TyphoonEngine
 
@@ -29,7 +28,7 @@ app.add_middleware(
 )
 
 # ================= CONFIG =================
-DATABASE_URL = os.getenv("DATABASE_URL")
+MAIN_API_URL = os.getenv("MAIN_API_URL")
 TYPHOON_API_KEY = os.getenv("TYPHOON_API_KEY")
 
 KNN_THRESHOLD = 5
@@ -62,51 +61,61 @@ class RecommendRequest(BaseModel):
 
 # ================= HELPERS =================
 def fetch_and_train():
-    """Fetch items from Postgres DB directly."""
+    """Fetch items from Next Server, fallback to mock data."""
     global FOOD_CACHE, is_trained, knn_bot
 
     try:
-        if not DATABASE_URL:
-            raise Exception("DATABASE_URL not set")
+        if not MAIN_API_URL:
+            raise Exception("MAIN_API_URL not set")
 
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Add Vercel protection bypass cookie
+        cookies = {
+            "x-vercel-protection-bypass": "tgfajfpupqkwcywrhuniknqwuthswydl"
+        }
+        url = f"{MAIN_API_URL}/api/items/data?limit=1000"
+        res = requests.get(url, cookies=cookies, timeout=10)
 
-        query = """
-            SELECT 
-                i.id as id,
-                f.name as name,
-                i."priceMin" as price,
-                ARRAY(
-                    SELECT t.name 
-                    FROM "_foodsToTags" ft
-                    JOIN "Tag" t ON ft."B" = t.id
-                    WHERE ft."A" = f.id
-                ) as tags
-            FROM "Item" i
-            JOIN "Food" f ON i.food_id = f.id;
-        """
-        cur.execute(query)
-        rows = cur.fetchall()
-
-        cleaned = []
-        for item in rows:
-            cleaned.append({
-                "id": str(item["id"]),
-                "name": item["name"],
-                "tags": item.get("tags", []),
-                "price": float(item.get("price") or 0),
-            })
-            
-        FOOD_CACHE = cleaned
-        print(f"✅ Loaded {len(FOOD_CACHE)} items from DB")
-
-        cur.close()
-        conn.close()
+        if res.status_code == 200:
+            body = res.json()
+            raw_data = body.get("data", [])
+            cleaned = []
+            for item in raw_data:
+                # Handle possible Next.js / Prisma nested format
+                food_obj = item.get("Food") or item.get("food") or {}
+                
+                # Extract Name
+                name = item.get("name") or food_obj.get("name") or "Unknown"
+                
+                # Extract Price
+                price = item.get("price") or item.get("priceMin") or food_obj.get("price") or 0
+                
+                # Extract Tags
+                raw_tags = item.get("tags") or food_obj.get("tags") or []
+                tags = []
+                for t in raw_tags:
+                    if isinstance(t, dict):
+                        # Nested Prisma tags e.g. {"tag": {"name": "ไทย"}} or {"name": "ไทย"}
+                        if "tag" in t and isinstance(t["tag"], dict):
+                            tags.append(t["tag"].get("name", ""))
+                        else:
+                            tags.append(t.get("name", ""))
+                    elif isinstance(t, str):
+                        tags.append(t)
+                
+                cleaned.append({
+                    "id": str(item["id"]),
+                    "name": name,
+                    "tags": [tag for tag in tags if tag],
+                    "price": float(price),
+                })
+            FOOD_CACHE = cleaned
+            print(f"✅ Loaded {len(FOOD_CACHE)} items from API")
+        else:
+            raise Exception(f"API returned {res.status_code}")
 
     except Exception as e:
-        print(f"❌ Failed to fetch data from DB: {e}")
-        pass
+        print(f"⚠️ Using mock data ({e})")
+        FOOD_CACHE = MOCK_FOOD_DB
 
     if FOOD_CACHE:
         knn_bot.train(FOOD_CACHE)
