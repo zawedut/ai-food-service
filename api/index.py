@@ -97,13 +97,18 @@ def fetch_and_train():
             raise Exception("MAIN_API_URL not set")
 
         # Add Vercel protection bypass cookie
+        # Add Vercel protection bypass
         bypass_token = os.getenv("VERCEL_BYPASS_TOKEN", "")
         cookies = {}
+        headers = {}
         if bypass_token:
             cookies["x-vercel-protection-bypass"] = bypass_token
+            headers["x-vercel-protection-bypass"] = bypass_token
+            # Also use authorization bearer just in case NextAuth or Vercel needs it for the API
+            headers["Authorization"] = f"Bearer {bypass_token}"
 
         url = f"{MAIN_API_URL}/api/items/data?limit=1000"
-        res = requests.get(url, cookies=cookies, timeout=10)
+        res = requests.get(url, headers=headers, cookies=cookies, timeout=10)
 
         if res.status_code == 200:
             body = res.json()
