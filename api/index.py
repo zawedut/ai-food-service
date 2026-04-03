@@ -8,7 +8,7 @@ import asyncio
 from collections import Counter
 
 # ─── Relative imports for Vercel ───
-from api.mock_db import MOCK_FOOD_DB
+# ─── Relative imports for Vercel ───
 from api.engines.knn import KNNEngine
 from api.engines.typhoon import TyphoonEngine
 
@@ -57,6 +57,34 @@ class HistoryItem(BaseModel):
 class RecommendRequest(BaseModel):
     filter: Filter = Filter()
     history: List[HistoryItem] = []
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "filter": {
+                        "tags": ["ไทย", "ไม่เผ็ด"],
+                        "priceMin": 30,
+                        "priceMax": 150
+                    },
+                    "history": [
+                        {
+                            "itemId": "cmndfk2sa0000hcus0vl61tuy",
+                            "status": "EAT"
+                        },
+                        {
+                            "itemId": "cmndfk2sb0001hcuseejlh1g4",
+                            "status": "LIKE"
+                        },
+                        {
+                            "itemId": "cmndfk2sb0007hcusd0ijdg5y",
+                            "status": "DISLIKE"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
 
 
 # ================= HELPERS =================
@@ -116,9 +144,9 @@ def fetch_and_train():
             raise Exception(f"API returned {res.status_code}")
 
     except Exception as e:
-        print(f"⚠️ Using mock data ({e})")
-        FOOD_CACHE = MOCK_FOOD_DB
-
+        print(f"❌ Failed to fetch data from API: {e}")
+        # Not falling back to mock data
+        pass
     if FOOD_CACHE:
         knn_bot.train(FOOD_CACHE)
         is_trained = True
