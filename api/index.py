@@ -69,9 +69,11 @@ def fetch_and_train():
             raise Exception("MAIN_API_URL not set")
 
         # Add Vercel protection bypass cookie
-        cookies = {
-            "x-vercel-protection-bypass": "tgfajfpupqkwcywrhuniknqwuthswydl"
-        }
+        bypass_token = os.getenv("VERCEL_BYPASS_TOKEN", "")
+        cookies = {}
+        if bypass_token:
+            cookies["x-vercel-protection-bypass"] = bypass_token
+
         url = f"{MAIN_API_URL}/api/items/data?limit=1000"
         res = requests.get(url, cookies=cookies, timeout=10)
 
