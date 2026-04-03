@@ -1,4 +1,28 @@
+# Virtual Environment
 .venv/
+env/
+venv/
+ENV/
+
+# Environment Variables
 .env
+.env.*
+
+# Python Cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Testing scripts (Local use only)
+fetch_data.py
+test_db.py
+test_api.py
+run_tests.py
+test_not_found.py
+
+# Vercel Configuration
+.vercel/
+
+# OS Files
+.DS_Store
+Thumbs.db
