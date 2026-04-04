@@ -164,7 +164,7 @@ class KNNEngine:
             try:
                 # encoder.transform ต้องการ list of lists
                 vecs = self.encoder.transform([filter_tags])
-                v_filter = np.sum(vecs, axis=0) * 15.0  # น้ำหนักระดับเทพเจ้า
+                v_filter = np.sum(vecs, axis=0) * 200.0  # น้ำหนักระดับเทพเจ้า
                 print(f"🔍 KNN Context: Heavy focus on tags {filter_tags}")
             except Exception as e:
                 pass
