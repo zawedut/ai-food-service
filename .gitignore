@@ -19,6 +19,7 @@ test_db.py
 test_api.py
 run_tests.py
 test_not_found.py
+generate_testcases.py
 
 # Vercel Configuration
 .vercel/

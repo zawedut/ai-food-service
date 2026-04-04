@@ -244,13 +244,18 @@ async def recommend(req: RecommendRequest):
                 )
             except Exception as e:
                 print(f"❌ Typhoon Error: {e}. Falling back to KNN.")
-                result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs)
+                # แก้ที่ 1
+                result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs, filter_tags=req.filter.tags)
+
         elif history_count < HYBRID_MODE_THRESHOLD and typhoon_bot:
             print("🔮 Strategy: Hybrid")
-            result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs)[:7]
+            # แก้ที่ 2
+            result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs, filter_tags=req.filter.tags)[:7]
+
         else:
             print("🧮 Strategy: KNN Expert")
-            result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs)
+            # แก้ที่ 3
+            result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs, filter_tags=req.filter.tags)
 
     # ==========================================
     # 4. FORCE 10 ITEMS LOGIC (ระบบตัวสำรอง)

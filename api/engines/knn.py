@@ -49,7 +49,8 @@ class KNNEngine:
         
         print(f"✅ KNN Trained: {len(all_foods)} items, {len(self.encoder.classes_)} unique tags")
         
-    def predict(self, candidates, eat_now_objs, liked_objs, disliked_objs, boost_recent=False):
+    # 🌟 แกะ 1: เพิ่มตัวแปร filter_tags เข้ามาในฟังก์ชัน predict
+    def predict(self, candidates, eat_now_objs, liked_objs, disliked_objs, filter_tags=None, boost_recent=False):
         """
         Enhanced prediction with multiple strategies
         """
@@ -57,11 +58,12 @@ class KNNEngine:
             print("❌ KNN not trained yet!")
             return []
         
-        # 1. สร้าง User Profile Vector
+        # 1. สร้าง User Profile Vector (ส่ง filter_tags เข้าไปคำนวณด้วย)
         user_vector = self._build_user_vector(
             eat_now_objs, 
             liked_objs, 
             disliked_objs,
+            filter_tags, # <-- ส่งค่าไปตรงนี้
             boost_recent
         )
         
@@ -74,7 +76,6 @@ class KNNEngine:
         for candidate in candidates:
             cand_id = str(candidate['id'])
             
-            # หา index ของอาหารนี้ใน trained model
             try:
                 idx = self.food_ids.index(cand_id)
                 food_vector = self.food_vectors[idx]
@@ -93,7 +94,7 @@ class KNNEngine:
                 scored_candidates.append((cand_id, final_score))
                 
             except ValueError:
-                continue  # ถ้าหา ID ไม่เจอให้ข้ามไป
+                continue
         
         # 4. เรียงตาม score
         scored_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -104,11 +105,9 @@ class KNNEngine:
         # 6. ผสมผลลัพธ์: 70% จาก scoring, 30% จาก KNN
         top_scored = [item[0] for item in scored_candidates[:15]]
         
-        # รวมผลโดยไม่ให้ซ้ำ
         final_results = []
         seen = set()
         
-        # เพิ่มจาก scored ก่อน
         for food_id in top_scored:
             if food_id not in seen:
                 final_results.append(food_id)
@@ -116,18 +115,18 @@ class KNNEngine:
                 if len(final_results) >= 10:
                     break
         
-        # เติมจาก KNN ถ้ายังไม่ครบ
         for food_id in knn_recommendations:
             if food_id not in seen and len(final_results) < 10:
                 final_results.append(food_id)
                 seen.add(food_id)
         
-        print(f"🎯 KNN Recommendations: {len(final_results)} items")
+        print(f"🎯 KNN Recommendations (Total={len(final_results)} items)")
         return final_results
     
-    def _build_user_vector(self, eat_now_objs, liked_objs, disliked_objs, boost_recent):
+    # 🌟 แกะ 2: รับค่า filter_tags เข้ามา
+    def _build_user_vector(self, eat_now_objs, liked_objs, disliked_objs, filter_tags, boost_recent):
         """
-        สร้าง vector ที่แทนความชอบของ User
+        สร้าง vector ที่แทนความชอบของ User พร้อมชั่งน้ำหนัก Filter ปัจจุบัน
         """
         user_vector = np.zeros(self.food_vectors.shape[1])
         
@@ -136,19 +135,16 @@ class KNNEngine:
                 return np.zeros(self.food_vectors.shape[1])
             
             tags_list = [f.get('tags', []) for f in objs]
-            
             if not tags_list:
                 return np.zeros(self.food_vectors.shape[1])
             
-            # Transform tags to vectors
             try:
                 vecs = self.encoder.transform(tags_list)
             except:
                 return np.zeros(self.food_vectors.shape[1])
             
-            # ถ้า boost_recent ให้น้ำหนักรายการล่าสุดมากกว่า
             if apply_boost and len(objs) > 0:
-                weights = np.linspace(1.0, 1.5, len(vecs))[::-1]  # รายการล่าสุดได้น้ำหนักสูงสุด
+                weights = np.linspace(1.0, 1.5, len(vecs))[::-1]
                 weighted_vecs = vecs * weights.reshape(-1, 1)
                 combined = np.sum(weighted_vecs, axis=0)
             else:
@@ -156,12 +152,24 @@ class KNNEngine:
             
             return combined * weight
         
-        # คำนวณน้ำหนัก (เพิ่มน้ำหนัก Super Like)
-        v_eat = add_weighted_tags(eat_now_objs, 6.0, boost_recent)  # เพิ่มจาก 5.0 เป็น 6.0
-        v_like = add_weighted_tags(liked_objs, 2.0, boost_recent)   # เพิ่มจาก 1.0 เป็น 2.0
-        v_hate = add_weighted_tags(disliked_objs, -7.0, False)      # เพิ่มจาก -5.0 เป็น -7.0
+        v_eat = add_weighted_tags(eat_now_objs, 6.0, boost_recent)
+        v_like = add_weighted_tags(liked_objs, 2.0, boost_recent)
+        v_hate = add_weighted_tags(disliked_objs, -7.0, False)
         
-        user_vector = v_eat + v_like + v_hate
+        # 🌟 แกะ 3: พลังของตัวกรอง (The Filter Overrider)
+        # ถ้ายูสเซอร์ระบุ Tags ตอนนี้ แปลว่า "ต้องเอาอันนี้แหละ!" 
+        # เราจึงคูณน้ำหนักไปเลย +15.0 เพื่อให้ชนะประวัติในอดีตทั้งหมด
+        v_filter = np.zeros(self.food_vectors.shape[1])
+        if filter_tags:
+            try:
+                # encoder.transform ต้องการ list of lists
+                vecs = self.encoder.transform([filter_tags])
+                v_filter = np.sum(vecs, axis=0) * 15.0  # น้ำหนักระดับเทพเจ้า
+                print(f"🔍 KNN Context: Heavy focus on tags {filter_tags}")
+            except Exception as e:
+                pass
+        
+        user_vector = v_eat + v_like + v_hate + v_filter
         
         # Normalize vector
         norm = np.linalg.norm(user_vector)
@@ -171,10 +179,6 @@ class KNNEngine:
         return user_vector
     
     def _cosine_similarity(self, vec1, vec2):
-        """
-        คำนวณ Cosine Similarity ระหว่าง 2 vectors
-        """
-        # แปลง sparse matrix เป็น dense array ถ้าจำเป็น
         if hasattr(vec2, 'toarray'):
             vec2 = vec2.toarray().flatten()
         
@@ -184,33 +188,22 @@ class KNNEngine:
         
         if norm1 == 0 or norm2 == 0:
             return 0.0
-        
         return dot_product / (norm1 * norm2)
     
     def _calculate_bonus(self, food_id, eat_now_objs, liked_objs):
-        """
-        คำนวณคะแนนโบนัสจาก metadata
-        """
         bonus = 0.0
         metadata = self.food_metadata.get(food_id, {})
-        
-        # โบนัสจาก category ที่เหมือนกัน
         if eat_now_objs:
             eat_now_categories = [obj.get('category', '') for obj in eat_now_objs]
             if metadata.get('category') in eat_now_categories:
                 bonus += 0.1
         
-        # โบนัสเล็กน้อยจาก popularity (ไม่ให้มากเกินไปเพื่อไม่ให้ bias)
         popularity = metadata.get('popularity', 0)
         if popularity > 0:
-            bonus += min(popularity / 1000, 0.05)  # cap ที่ 0.05
-        
+            bonus += min(popularity / 1000, 0.05)
         return bonus
     
     def _get_knn_neighbors(self, user_vector, candidate_ids_set):
-        """
-        ใช้ KNN หาเพื่อนบ้านที่ใกล้เคียง
-        """
         try:
             n_neighbors = min(30, len(self.food_ids))
             distances, indices = self.model.kneighbors(
@@ -225,20 +218,13 @@ class KNNEngine:
                     recommended.append(food_id)
                     if len(recommended) >= 15:
                         break
-            
             return recommended
-            
         except Exception as e:
-            print(f"⚠️ KNN neighbor search failed: {e}")
             return []
     
     def get_stats(self):
-        """
-        ดูสถิติของ model
-        """
         if not self.is_trained:
             return {"trained": False}
-        
         return {
             "trained": True,
             "total_foods": len(self.food_ids),
