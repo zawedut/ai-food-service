@@ -32,7 +32,7 @@ class TyphoonEngine:
         }
         
         payload = {
-            "model": "typhoon-v2.5-30b-a3b-instruct",
+            "model": "typhoon-v2.1-12b-instruct",
             "messages": [
                 {
                     "role": "system", 
@@ -45,7 +45,7 @@ class TyphoonEngine:
             ],
             # ปรับลด Temperature ลงเพื่อให้ AI ตอบเป็น JSON เป๊ะๆ ไม่สร้างสรรค์คำพูดเกินไป
             "temperature": 0.3, 
-            "max_tokens": 512,
+            "max_tokens": 2048,
             "top_p": 0.85
         }
         
