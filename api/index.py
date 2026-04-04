@@ -173,15 +173,15 @@ def analyze_user_preferences(history: List[HistoryItem]) -> dict:
     }
 
 
-## ================= ENDPOINTS =================
+# ================= ENDPOINTS =================
 @app.post("/api/recommend")
 async def recommend(req: RecommendRequest):
     """
-    AI recommends menu items.
+    AI recommends menu items (Soft Filtering with Fallbacks).
     Returns: { itemIds: string[] }
     """
     print("\n" + "="*40)
-    print("📨 NEW REQUEST RECEIVED")
+    print("📨 NEW REQUEST RECEIVED (SOFT FILTERS)")
     print("="*40)
 
     if not is_trained:
@@ -190,30 +190,30 @@ async def recommend(req: RecommendRequest):
 
     print(f"📦 Total in DB (Cache): {len(FOOD_CACHE)}")
 
-    # 1. Filter by price & tags
-    candidates = []
-    for f in FOOD_CACHE:
-        price = f.get("price", 0)
-        if price < (req.filter.priceMin or 0) or price > (req.filter.priceMax or 999999):
-            continue
-        if req.filter.tags:
-            if not any(t in f.get("tags", []) for t in req.filter.tags):
-                continue
-        candidates.append(f)
-
-    print(f"🎯 Candidates after Price/Tags filter: {len(candidates)}")
-
-    # 2. Parse history
+    # แยกของเป็น 2 กอง: ของที่คนยังไม่เคยกิน
     eat_ids = [h.itemId for h in req.history if h.status == "EAT"]
     like_ids = [h.itemId for h in req.history if h.status == "LIKE"]
     dislike_ids = [h.itemId for h in req.history if h.status == "DISLIKE"]
-
     seen_ids = set(eat_ids + like_ids + dislike_ids)
-    print(f"👁️ Items already seen by user: {len(seen_ids)}")
 
-    # Remove already-seen items
-    candidates_unseen = [c for c in candidates if c["id"] not in seen_ids]
-    print(f"✅ Final Valid Candidates for AI: {len(candidates_unseen)}")
+    # กองที่ 1: ของที่ยังไม่เคยเห็น และ "อยู่ในงบ" (Preferred)
+    candidates_in_budget = []
+    # กองที่ 2: ของที่ยังไม่เคยเห็น แต่ "อยู่นอกงบ" (Backup)
+    candidates_out_budget = []
+
+    for f in FOOD_CACHE:
+        if f["id"] in seen_ids:
+            continue # ข้ามของที่เคยกินแล้ว
+            
+        price = f.get("price", 0)
+        # ตรวจสอบว่าอยู่ในงบไหม
+        if (req.filter.priceMin or 0) <= price <= (req.filter.priceMax or 999999):
+            candidates_in_budget.append(f)
+        else:
+            candidates_out_budget.append(f)
+
+    print(f"💰 In-budget candidates: {len(candidates_in_budget)}")
+    print(f"💸 Out-of-budget candidates: {len(candidates_out_budget)}")
 
     def get_objs(ids):
         return [f for f in FOOD_CACHE if f["id"] in ids]
@@ -223,72 +223,67 @@ async def recommend(req: RecommendRequest):
     dislike_objs = get_objs(dislike_ids)
 
     user_prefs = analyze_user_preferences(req.history)
+    combined_tags = list(set(user_prefs["favorite_tags"] + req.filter.tags))
     history_count = len(eat_ids) + len(like_ids)
+    
     result_ids = []
+    
+    # โยน "ของที่อยู่ในงบ" ให้ AI วิเคราะห์เป็นหลักก่อน
+    target_candidates = candidates_in_budget if candidates_in_budget else candidates_out_budget
 
-    # 3. Strategy selection (รันเฉพาะตอนที่มี Candidate เหลือ)
-    if candidates_unseen:
+    if target_candidates:
         if history_count < KNN_THRESHOLD and typhoon_bot:
-            print("🌪️ Strategy: Typhoon AI (cold start)")
+            print("🌪️ Strategy: Typhoon AI")
             try:
                 result_ids = await typhoon_bot.predict(
-                    candidates_unseen[:20],
+                    target_candidates[:50],
                     [f["name"] for f in eat_objs],
                     [f["name"] for f in like_objs],
                     [f["name"] for f in dislike_objs],
-                    user_prefs["favorite_tags"],
+                    combined_tags,
                 )
             except Exception as e:
                 print(f"❌ Typhoon Error: {e}. Falling back to KNN.")
-                result_ids = knn_bot.predict(candidates_unseen, eat_objs, like_objs, dislike_objs)
-
+                result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs)
         elif history_count < HYBRID_MODE_THRESHOLD and typhoon_bot:
             print("🔮 Strategy: Hybrid")
-            result_ids = knn_bot.predict(candidates_unseen, eat_objs, like_objs, dislike_objs)[:7]
-
+            result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs)[:7]
         else:
             print("🧮 Strategy: KNN Expert")
-            result_ids = knn_bot.predict(candidates_unseen, eat_objs, like_objs, dislike_objs)
-    else:
-        print("⚠️ No valid candidates for AI. Skipping AI prediction.")
+            result_ids = knn_bot.predict(target_candidates, eat_objs, like_objs, dislike_objs)
 
     # ==========================================
     # 4. FORCE 10 ITEMS LOGIC (ระบบตัวสำรอง)
     # ==========================================
     final_ids = []
 
-    # นำผลลัพธ์จาก AI มาใส่ก่อน (เช็กไม่ให้ซ้ำ)
     for rid in result_ids:
         if rid not in final_ids:
             final_ids.append(rid)
 
-    # Fallback 1: ถ้า AI คืนค่ามาไม่ครบ 10 ให้ดึงจาก Candidate ที่ผ่านฟิลเตอร์มาเติม
+    # Fallback 1: เติมด้วยของที่ "อยู่ในงบ" ให้เต็ม
     if len(final_ids) < 10:
-        print(f"⚠️ Has {len(final_ids)} items. Padding with Fallback 1 (Unseen Candidates)...")
-        for c in candidates_unseen:
+        for c in candidates_in_budget:
             if c["id"] not in final_ids:
                 final_ids.append(c["id"])
             if len(final_ids) >= 10: break
 
-    # Fallback 2: ถ้ายกมาหมด Candidate แล้วยังไม่ครบ 10 (แปลว่าฟิลเตอร์ Price/Tags โหดเกินไป) 
-    # ให้ดึงเมนูอะไรก็ได้ในระบบที่ "ยังไม่เคยกิน" มาเติม
+    # Fallback 2: ถ้าในงบหมดแล้ว ก็ต้องเอาของที่ "เกินงบ" มาโชว์
     if len(final_ids) < 10:
-        print(f"⚠️ Has {len(final_ids)} items. Padding with Fallback 2 (All Unseen DB)...")
-        for f in FOOD_CACHE:
-            if f["id"] not in seen_ids and f["id"] not in final_ids:
-                final_ids.append(f["id"])
+        print("⚠️ Not enough in-budget items. Padding with out-of-budget...")
+        for c in candidates_out_budget:
+            if c["id"] not in final_ids:
+                final_ids.append(c["id"])
             if len(final_ids) >= 10: break
 
-    # Fallback 3: ถ้าเติมจนหมด DB แล้วยังไม่ครบอีก (แปลว่าเคยกินมาหมดร้านแล้วจริงๆ)
-    # ให้ยอมเอาเมนูที่ "เคยกิน/เคยเห็นแล้ว" กลับมาแนะนำซ้ำ
+    # Fallback 3: ถ้ายกมาหมดโลกแล้วยังไม่ครบ 10 ยอมเอาของที่เคยกินแล้วมาวนซ้ำ
     if len(final_ids) < 10:
-        print(f"🚨 Desperate Mode. Padding with Fallback 3 (Seen items)...")
+        print("🚨 Desperate Mode. Padding with Seen items...")
         for f in FOOD_CACHE:
             if f["id"] not in final_ids:
                 final_ids.append(f["id"])
             if len(final_ids) >= 10: break
 
-    # ตัดให้เหลือแค่ 10 อันพอดีเป๊ะ
     final_ids = final_ids[:10]
     
     print(f"🚀 FINISHED! Returning {len(final_ids)} items.")
