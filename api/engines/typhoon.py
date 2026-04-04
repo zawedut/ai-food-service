@@ -59,6 +59,7 @@ class TyphoonEngine:
             
             if response.status_code != 200:
                 print(f"❌ Typhoon API Error: {response.status_code}")
+                print(f"🔍 Error Detail: {response.text}")
                 return self._fallback_recommendation(shortlist, favorite_tags)
             
             # 5. Parse response
